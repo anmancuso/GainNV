@@ -1,2 +1,9 @@
 # GainNV
-Gain analysis for the Neutron Veto PMTs
+Automatized gain analysis for the Neutron Veto PMTs
+
+Main Contributor:
+- Lorenzo Bellagamba
+
+Maintainer: 
+- Andrea Mancuso
+
