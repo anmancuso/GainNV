@@ -56,6 +56,44 @@ class NVLEDCalibration(strax.Plugin):
              ('length', np.int32, 'Length of the interval in samples'),
              ('signal_time', np.int32, 'Sample of peak wrt trigger time (sample)')]
 
+
+    def merge_waveform_longer(rr, channels=None, length=330):
+        """
+        Simple function to merge the records into a single waveform.
+        We have two different Acquisition Window length:
+        - LED_calibration_NV : 160 Samples -> 2 records (record0 and record1)
+        - LED_calibration_NV_2 : 320 Samples -> 3 record
+        The signal is expected between the record0 and record1. Thus the needed of a
+        merged waveform.
+        """
+        record0=rr[rr["record_i"]==0]
+        record1=rr[rr["record_i"]==1]
+        record2=rr[rr["record_i"]==2]
+
+        if channels != None:
+            mask0           = np.where(np.in1d(record0['channel'], channels))[0]
+            mask1           = np.where(np.in1d(record1['channel'], channels))[0]
+            mask2           = np.where(np.in1d(record2['channel'], channels))[0]
+            _raw_records0   = record0[mask0]
+            _raw_records1   = record1[mask1]
+            _raw_records2   = record2[mask2]
+        else:
+            _raw_records0 = record0
+            _raw_records1 = record1
+            _raw_records1 = record2
+
+
+        record_length = length#np.shape(_raw_records.dtype['data'])[0]
+        _dtype = [(('Channel/PMT number', 'channel'),                      np.int16),
+                      (('Waveform data in raw ADC counts', 'data'), 'f8', (record_length,))]
+        waveform = np.zeros(len(_raw_records0), dtype=_dtype)
+        waveform['channel'] = _raw_records0['channel']
+        waveform['data']    = np.concatenate((_raw_records0['data'][:, :],_raw_records1['data'][:, :],_raw_records2['data'][:, :]),axis=1)
+        return waveform
+
+
+
+
     def compute(self, raw_records_nv):
             '''
             The data for LED calibration are build for those PMT which belongs to channel list.
