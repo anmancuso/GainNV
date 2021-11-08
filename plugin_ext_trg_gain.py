@@ -56,7 +56,7 @@ class NVLEDCalibration(strax.Plugin):
              ('length', np.int32, 'Length of the interval in samples'),
              ('signal_time', np.int32, 'Sample of peak wrt trigger time (sample)')]
 
-
+#------------------------------------------------------------------------------#
     def merge_waveform_longer(rr, channels=None, length=330):
         """
         Simple function to merge the records into a single waveform.
@@ -83,21 +83,125 @@ class NVLEDCalibration(strax.Plugin):
             _raw_records1 = record2
 
 
-        record_length = length#np.shape(_raw_records.dtype['data'])[0]
+        record_length = length
         _dtype = [(('Channel/PMT number', 'channel'),                      np.int16),
                       (('Waveform data in raw ADC counts', 'data'), 'f8', (record_length,))]
         waveform = np.zeros(len(_raw_records0), dtype=_dtype)
         waveform['channel'] = _raw_records0['channel']
         waveform['data']    = np.concatenate((_raw_records0['data'][:, :],_raw_records1['data'][:, :],_raw_records2['data'][:, :]),axis=1)
         return waveform
+#------------------------------------------------------------------------------#
+    def get_baseline(raw_records,  channels=None, window_bsl=(0,110)):
+        '''
+        Function which estimates the baseline and its rms
+        within the specified number of samples.
+        '''
+        if window_bsl == None: window_bsl = self.baseline_window
 
+        if channels != None:
+            mask           = np.where(np.in1d(raw_records['channel'], channels))[0]
+            _raw_records   = raw_records[mask]
+        else: _raw_records = raw_records
+        _dtype = [(('Channel/PMT number', 'channel'),                      np.int16),
+                      (('Baseline in the given window', 'baseline'),           np.float32),
+                      (('Baseline error in the given window', 'baseline_err'), np.float32)]
+        baseline = np.zeros(len(_raw_records), dtype=_dtype)
+        baseline['channel']      = _raw_records['channel']
+        baseline['baseline']     = _raw_records['data'][:, window_bsl[0]:window_bsl[1]].mean(axis=1)
+        baseline['baseline_err'] = _raw_records['data'][:, window_bsl[0]:window_bsl[1]].std(axis=1)/np.sqrt(window_bsl[1] - window_bsl[0])
+        return baseline
+#------------------------------------------------------------------------------#
+
+    def get_signal(raw_records, baseline, channels=None):
+        '''
+        Function which subtract the baseline to the waveform and invert it.
+        '''
+
+
+        if channels != None:
+            mask           = np.where(np.in1d(raw_records['channel'], channels))[0]
+            _raw_records   = raw_records[mask]
+        else: _raw_records = raw_records
+
+        record_length = np.shape(_raw_records.dtype['data'])[0]
+        _dtype = [(('Channel/PMT number', 'channel'), '<i2'),
+                  (('Waveform data in raw ADC counts', 'data'), 'f8', (record_length,))]
+        signal = np.zeros(len(_raw_records), dtype=_dtype)
+
+        signal['channel'] = _raw_records['channel']
+        bsl               =  baseline ["baseline"]
+        signal['data']    = -1. * (_raw_records['data'][:, :].transpose() - bsl[:]).transpose()
+
+        return signal
+#-----------------------------------------------------------------------------------------------------#
+    def get_amplitude(records, channels=None,window=(0,110)):
+        '''
+        Function that compute the max (amplitude) in a given windows.
+        '''
+        if window == None: window = self.led_window
+
+        if channels != None:
+            mask       = np.where(np.in1d(records['channel'], channels))[0]
+            _records   = records[mask]
+        else: _records = records
+
+        _dtype = [(('Channel/PMT number', 'channel'),                                    np.int16),
+                  (('Amplitude in the given window', 'amplitude'),                       np.float32),
+                  (('Sample/index of amplitude in the given window', 'amplitude_index'), np.float32)]
+        amplitude = np.zeros(len(_records), dtype = _dtype)
+
+        amplitude['channel']         = _records['channel']
+        amplitude['amplitude']       = _records['data'][:, window[0]:window[1]].max(axis=1)
+        amplitude['amplitude_index'] = _records['data'][:, window[0]:window[1]].argmax(axis=1) + window[0]
+
+        return amplitude
+
+#-----------------------------------------------------------------------------------------------------#
+
+    def get_area(signal,  channels=None,window=(120,160)):
+        '''
+        Compute area in a given window.
+        '''
+        if window == None: window_bsl = self.integration_window
+        if channels != None:
+            mask       = np.where(np.in1d(signal['channel'], channels))[0]
+            _records   = signal[mask]
+        else: _records = signal
+
+        _dtype = [(('Channel/PMT number', 'channel'),                   np.int16),
+                  (('Integrated charge in a the given window', 'area'), np.float32)]
+        area = np.zeros(len(_records), dtype = _dtype)
+
+        area['channel'] = _records['channel']
+        area['area']    = _records['data'][:, window[0]:window[1]].sum(axis=1)
+
+        return area
 
 
 
     def compute(self, raw_records_nv):
-            '''
-            The data for LED calibration are build for those PMT which belongs to channel list.
-            This is used for the different ligh levels. As defaul value all the PMTs are considered.
-            '''
-            channels=list(self.channel_list)
-            mask = np.where(np.in1d(raw_records_nv['channel'],channels))[0]
+        '''
+        The data for LED calibration are build for those PMT which belongs to channel list.
+        This is used for the different ligh levels. As defaul value all the PMTs are considered.
+        '''
+        channels=list(self.channel_list)
+        mask = np.where(np.in1d(raw_records_nv['channel'],channels))[0]
+        wave_signal=merge_waveform_longer(raw_records_nv,channels=channels, length=330)
+        baseline=get_baseline(wave_signal,  channels=channels, window_bsl=(0,110))["baseline"]
+        signal=get_signal(wave_signal, channels=channels,baseline=baseline)
+        #signal    = get_records(rr, baseline_window=self.config['baseline_window'])
+        del raw_records_nv
+        temp = np.zeros(len(signal), dtype=self.dtype)
+        #strax.copy_to_buffer(r, temp, "_recs_to_temp_led")
+
+        on = get_amplitude(signal,channels=channels, window=(120,200))
+
+        #on, off = get_amplitude(r, self.config['led_window'], self.config['noise_window'])
+        temp['amplitude_led']   = on['amplitude']
+        temp['signal_time']   = on['amplitude_index']
+        #temp['amplitude_noise'] = off['amplitude']
+
+        area = get_area(signal,channels=channels)
+        #area = get_area(r, self.config['led_window'])
+        temp['area'] = area['area']
+        return temp
